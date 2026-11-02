@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>3D клавиатура в камере</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:system-ui,sans-serif;color:#fff}
+video,canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+video{transform:scaleX(-1);object-fit:fill}
+#txt{position:absolute;top:12px;left:50%;transform:translateX(-50%);min-width:320px;max-width:90%;padding:10px 16px;background:rgba(0,0,0,.6);border:1px solid #22d3ee;border-radius:10px;font-size:24px;min-height:32px;white-space:pre-wrap;word-break:break-all}
+#st{position:absolute;bottom:10px;left:12px;font-size:14px;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:8px;max-width:90%}
+</style></head><body>
+<video id="v" playsinline muted></video>
+<canvas id="gl"></canvas>
+<canvas id="hc"></canvas>
+<div id="txt">…</div>
+<div id="st">Загрузка… разреши доступ к камере.</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let W=innerWidth,H=innerHeight;
+const renderer=new THREE.WebGLRenderer({canvas:$('gl'),alpha:true,antialias:true});
+renderer.setClearColor(0,0);
+const scene=new THREE.Scene();
+const cam3=new THREE.OrthographicCamera(0,W,H,0,-2000,2000);
+cam3.position.z=1000;
+scene.add(new THREE.AmbientLight(0xffffff,.7));
+const dl=new THREE.DirectionalLight(0xffffff,.8);dl.position.set(-200,400,800);scene.add(dl);
+const hc=$('hc'),hx=hc.getContext('2d');
+
+// ---- клавиатура ----
+const kb=new THREE.Group();kb.rotation.x=-0.5;scene.add(kb);
+const meshes=[];
+function label(t,w){
+  const c=document.createElement('canvas');c.width=256;c.height=128;
+  const x=c.getContext('2d');x.fillStyle='#fff';x.font='bold 64px sans-serif';
+  x.textAlign='center';x.textBaseline='middle';x.fillText(t,128,68);
+  return new THREE.CanvasTexture(c);
+}
+function addKey(ch,x,y,w,txt,handle){
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,50,handle?8:14),
+    new THREE.MeshStandardMaterial({color:handle?0xfacc15:0x22d3ee,transparent:true,opacity:.6,emissive:0x0a3a4a}));
+  m.position.set(x,y,0);m.userData={ch,handle,t:-1e9};
+  const p=new THREE.Mesh(new THREE.PlaneGeometry(Math.min(w,60)*1.0,30),
+    new THREE.MeshBasicMaterial({map:label(txt||ch),transparent:true}));
+  p.position.z=(handle?4:7)+.2;m.add(p);kb.add(m);meshes.push(m);
+}
+const rows=["1234567890","QWERTYUIOP","ASDFGHJKL","ZXCVBNM"],off=[0,0,14,36];
+rows.forEach((r,ri)=>[...r].forEach((c,i)=>addKey(c,(i-(r.length-1)/2)*58+off[ri],-ri*58,50)));
+addKey('BS',350,0,90,'⌫');
+addKey(' ',0,-4*58,300,'ПРОБЕЛ');
+addKey('HANDLE',0,70,640,'☰ ЗАХВАТИ И ПЕРЕТАЩИ',true);
+function layout(){
+  W=innerWidth;H=innerHeight;
+  renderer.setSize(W,H,false);hc.width=W;hc.height=H;
+  cam3.right=W;cam3.top=H;cam3.updateProjectionMatrix();
+  kb.scale.setScalar(Math.max(.7,W/1100));
+}
+addEventListener('resize',layout);layout();
+kb.position.set(W/2,H*.4,0);
+
+// ---- рука ----
+const ray=new THREE.Raycaster(),ptr={x:W/2,y:H/2},drag={on:false,dx:0,dy:0};
+let pinch=false,seen=false,text='',hover=null;
+function hit(){
+  ray.setFromCamera(new THREE.Vector2(ptr.x/W*2-1,-(ptr.y/H*2-1)),cam3);
+  const h=ray.intersectObjects(meshes,false);return h.length?h[0].object:null;
+}
+function pinchStart(){
+  const m=hit();if(!m)return;
+  if(m.userData.handle){drag.on=true;drag.dx=ptr.x-kb.position.x;drag.dy=(H-ptr.y)-kb.position.y;return}
+  m.userData.t=performance.now();
+  const c=m.userData.ch;
+  if(c==='BS')text=text.slice(0,-1);else text+=c;
+  $('txt').textContent=text||'…';
+}
+function onResults(r){
+  hx.clearRect(0,0,W,H);
+  if(!r.multiHandLandmarks||!r.multiHandLandmarks.length){seen=false;pinch=false;drag.on=false;return}
+  seen=true;const L=r.multiHandLandmarks[0];
+  L.forEach(p=>{hx.fillStyle='rgba(255,255,255,.7)';hx.beginPath();hx.arc((1-p.x)*W,p.y*H,3,0,7);hx.fill()});
+  const size=Math.hypot(L[0].x-L[9].x,L[0].y-L[9].y)||1;
+  const d=Math.hypot(L[4].x-L[8].x,L[4].y-L[8].y)/size;
+  ptr.x+=((1-L[8].x)*W-ptr.x)*.55;ptr.y+=(L[8].y*H-ptr.y)*.55;
+  if(!pinch&&d<.3){pinch=true;pinchStart()}
+  else if(pinch&&d>.45){pinch=false;drag.on=false}
+  hx.strokeStyle=pinch?'#4ade80':'#22d3ee';hx.lineWidth=4;
+  hx.beginPath();hx.arc(ptr.x,ptr.y,pinch?10:18,0,7);hx.stroke();
+  $('st').textContent=pinch?'Щипок: нажатие / перетаскивание':'Наведи указательный палец на клавишу и сведи большой и указательный (щипок)';
+}
+(function loop(){
+  requestAnimationFrame(loop);
+  const now=performance.now();
+  if(drag.on)kb.position.set(ptr.x-drag.dx,(H-ptr.y)-drag.dy,0);
+  hover=seen?hit():null;
+  meshes.forEach(m=>{
+    const k=Math.max(0,1-(now-m.userData.t)/220);
+    m.position.z=-7*k;
+    const hv=m===hover;
+    m.material.emissive.setHex(k>0?0x22ff88:hv?0x1090b0:0x0a3a4a);
+    m.material.opacity=hv?.85:.6;
+  });
+  renderer.render(scene,cam3);
+})();
+
+// ---- камера + MediaPipe ----
+const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`});
+hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.6,minTrackingConfidence:.6});
+hands.onResults(onResults);
+const v=$('v');
+new Camera(v,{onFrame:async()=>{await hands.send({image:v})},width:1280,height:720}).start()
+ .then(()=>{$('st').textContent='Покажи руку в камеру'})
+ .catch(()=>{$('st').textContent='Нет доступа к камере. Разреши камеру в браузере.'});
+</script></body></html>
